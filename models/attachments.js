@@ -26,7 +26,7 @@ if (Meteor.isServer) {
     attachmentUploadSize = parseInt(process.env.ATTACHMENTS_UPLOAD_MAX_SIZE);
 
     if (isNaN(attachmentUploadSize)) {
-      attachmentUploadSize = 0
+      attachmentUploadSize = 0;
     }
   }
 
@@ -38,7 +38,9 @@ if (Meteor.isServer) {
     }
   }
 
-  storagePath = path.join(process.env.WRITABLE_PATH, 'attachments');
+  // **Fix applied here: fallback to '/tmp' if WRITABLE_PATH not defined**
+  const writablePath = process.env.WRITABLE_PATH || '/tmp';
+  storagePath = path.join(writablePath, 'attachments');
 }
 
 export const fileStoreStrategyFactory = new FileStoreStrategyFactory(AttachmentStoreStrategyFilesystem, storagePath, AttachmentStoreStrategyGridFs, attachmentBucket);
@@ -47,65 +49,51 @@ export const fileStoreStrategyFactory = new FileStoreStrategyFactory(AttachmentS
 // see: https://github.com/VeliovGroup/Meteor-Files/wiki/Schema
 
 Attachments = new FilesCollection({
-  debug: false, // Change to `true` for debugging
+  debug: false,
   collectionName: 'attachments',
   allowClientCode: true,
   namingFunction(opts) {
-    let filenameWithoutExtension = ""
+    let filenameWithoutExtension = "";
     let fileId = "";
     if (opts?.name) {
-      // Client
       filenameWithoutExtension = opts.name.replace(/(.+)\..+/, "$1");
       fileId = opts.meta.fileId;
       delete opts.meta.fileId;
     } else if (opts?.file?.name) {
-      // Server
       if (opts.file.extension) {
-        filenameWithoutExtension = opts.file.name.replace(new RegExp(opts.file.extensionWithDot + "$"), "")
+        filenameWithoutExtension = opts.file.name.replace(new RegExp(opts.file.extensionWithDot + "$"), "");
       } else {
-        // file has no extension, so don't replace anything, otherwise the last character is removed (because extensionWithDot = '.')
         filenameWithoutExtension = opts.file.name;
       }
       fileId = opts.fileId;
-    }
-    else {
-      // should never reach here
+    } else {
       filenameWithoutExtension = Math.random().toString(36).slice(2);
       fileId = Math.random().toString(36).slice(2);
     }
 
-    // OLD:
-    //const ret = fileId + "-original-" + filenameWithoutExtension;
-    // NEW: Save file only with filename of ObjectID, not including filename.
-    // Fixes https://github.com/wekan/wekan/issues/4416#issuecomment-1510517168
     const ret = fileId;
-    // remove fileId from meta, it was only stored there to have this information here in the namingFunction function
     return ret;
   },
   sanitize(str, max, replacement) {
-    // keep the original filename
     return str;
   },
   storagePath() {
-    const ret = fileStoreStrategyFactory.storagePath;
-    return ret;
+    return fileStoreStrategyFactory.storagePath;
   },
   onAfterUpload(fileObj) {
-    // current storage is the filesystem, update object and database
     Object.keys(fileObj.versions).forEach(versionName => {
       fileObj.versions[versionName].storage = STORAGE_NAME_FILESYSTEM;
     });
 
     this._now = new Date();
-    Attachments.update({ _id: fileObj._id }, { $set: { "versions" : fileObj.versions } });
-    Attachments.update({ _id: fileObj.uploadedAtOstrio }, { $set: { "uploadedAtOstrio" : this._now } });
+    Attachments.update({ _id: fileObj._id }, { $set: { "versions": fileObj.versions } });
+    Attachments.update({ _id: fileObj.uploadedAtOstrio }, { $set: { "uploadedAtOstrio": this._now } });
 
     let storageDestination = fileObj.meta.copyStorage || STORAGE_NAME_GRIDFS;
     Meteor.defer(() => Meteor.call('validateAttachmentAndMoveToStorage', fileObj._id, storageDestination));
   },
   interceptDownload(http, fileObj, versionName) {
-    const ret = fileStoreStrategyFactory.getFileStrategy(fileObj, versionName).interceptDownload(http, this.cacheControl);
-    return ret;
+    return fileStoreStrategyFactory.getFileStrategy(fileObj, versionName).interceptDownload(http, this.cacheControl);
   },
   onAfterRemove(files) {
     files.forEach(fileObj => {
@@ -114,11 +102,7 @@ Attachments = new FilesCollection({
       });
     });
   },
-  // We authorize the attachment download either:
-  // - if the board is public, everyone (even unconnected) can download it
-  // - if the board is private, only board members can download it
   protected(fileObj) {
-    // file may have been deleted already again after upload validation failed
     if (!fileObj) {
       return false;
     }
